@@ -1,0 +1,340 @@
+{
+  "name": "researchloop",
+  "displayName": "ResearchLoop",
+  "description": "Autonomous AI-powered research loop - literature review, hyperparameter tuning, experiments, and report generation",
+  "version": "0.1.0",
+  "publisher": "researchloop",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Data Science",
+    "Other"
+  ],
+  "keywords": [
+    "research",
+    "hyperparameter",
+    "tuning",
+    "ml",
+    "robotics",
+    "arxiv",
+    "ai",
+    "agent"
+  ],
+  "activationEvents": [
+    "onView:researchloop.explorer",
+    "onCommand:researchloop.newSession"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "researchloop",
+          "title": "ResearchLoop",
+          "icon": "media/research-loop.svg"
+        }
+      ]
+    },
+    "views": {
+      "researchloop": [
+        {
+          "id": "researchloop.explorer",
+          "name": "Research Explorer",
+          "type": "tree"
+        },
+        {
+          "id": "researchloop.pipeline",
+          "name": "Pipeline",
+          "type": "tree"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "researchloop.newSession",
+        "title": "ResearchLoop: New Research Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "researchloop.startPipeline",
+        "title": "ResearchLoop: Start Pipeline",
+        "icon": "$(play)"
+      },
+      {
+        "command": "researchloop.pausePipeline",
+        "title": "ResearchLoop: Pause Pipeline",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "researchloop.resumePipeline",
+        "title": "ResearchLoop: Resume Pipeline",
+        "icon": "$(play)"
+      },
+      {
+        "command": "researchloop.cancelPipeline",
+        "title": "ResearchLoop: Cancel Pipeline",
+        "icon": "$(stop)"
+      },
+      {
+        "command": "researchloop.openDashboard",
+        "title": "ResearchLoop: Open Results Dashboard"
+      },
+      {
+        "command": "researchloop.openPipelineBuilder",
+        "title": "ResearchLoop: Open Pipeline Builder"
+      },
+      {
+        "command": "researchloop.openReportPreview",
+        "title": "ResearchLoop: Open Report Preview"
+      },
+      {
+        "command": "researchloop.viewReport",
+        "title": "ResearchLoop: View Report"
+      },
+      {
+        "command": "researchloop.viewExperiments",
+        "title": "ResearchLoop: View Experiments"
+      },
+      {
+        "command": "researchloop.openSettings",
+        "title": "ResearchLoop: Settings"
+      },
+      {
+        "command": "researchloop.exportReport",
+        "title": "ResearchLoop: Export Report"
+      },
+      {
+        "command": "researchloop.searchPapers",
+        "title": "ResearchLoop: Search Papers",
+        "icon": "$(search)"
+      },
+      {
+        "command": "researchloop.deleteSession",
+        "title": "ResearchLoop: Delete Session",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "researchloop.refreshExplorer",
+        "title": "ResearchLoop: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "researchloop.runResearch",
+        "title": "ResearchLoop: Run Research",
+        "icon": "$(play)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "researchloop.newSession",
+          "when": "view == researchloop.explorer",
+          "group": "navigation"
+        },
+        {
+          "command": "researchloop.refreshExplorer",
+          "when": "view == researchloop.explorer",
+          "group": "navigation"
+        },
+        {
+          "command": "researchloop.startPipeline",
+          "when": "view == researchloop.pipeline && researchloop.pipelineState == idle",
+          "group": "navigation"
+        },
+        {
+          "command": "researchloop.pausePipeline",
+          "when": "view == researchloop.pipeline && researchloop.pipelineState == running",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "researchloop.runResearch",
+          "when": "view == researchloop.explorer && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "researchloop.deleteSession",
+          "when": "view == researchloop.explorer && viewItem == session"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "ResearchLoop",
+      "properties": {
+        "researchloop.llm.activeProvider": {
+          "type": "string",
+          "default": "ollama",
+          "enum": [
+            "claude",
+            "openai",
+            "ollama"
+          ],
+          "enumDescriptions": [
+            "Anthropic Claude API (requires API key)",
+            "OpenAI API (requires API key)",
+            "Ollama local server (free, no API key)"
+          ],
+          "description": "Active LLM provider for research analysis"
+        },
+        "researchloop.llm.claude.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Claude API key from [Anthropic Console](https://console.anthropic.com)"
+        },
+        "researchloop.llm.claude.model": {
+          "type": "string",
+          "default": "claude-sonnet-4-20250514",
+          "description": "Claude model to use"
+        },
+        "researchloop.llm.openai.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API key"
+        },
+        "researchloop.llm.openai.model": {
+          "type": "string",
+          "default": "o3-mini",
+          "description": "OpenAI model to use (o3-mini recommended for code generation)"
+        },
+        "researchloop.llm.ollama.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama local server URL"
+        },
+        "researchloop.llm.ollama.model": {
+          "type": "string",
+          "default": "llama3.1",
+          "description": "Ollama model to use"
+        },
+        "researchloop.llm.tokenBudget": {
+          "type": "number",
+          "default": 0,
+          "description": "Maximum tokens per session (0 = unlimited)"
+        },
+        "researchloop.llm.costBudget": {
+          "type": "number",
+          "default": 0,
+          "description": "Maximum cost in USD per session (0 = unlimited)"
+        },
+        "researchloop.modules.enabled": {
+          "type": "array",
+          "default": [
+            "literature",
+            "code",
+            "experiment",
+            "analysis",
+            "report"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Enabled research modules"
+        },
+        "researchloop.experiment.defaultRunner": {
+          "type": "string",
+          "default": "local",
+          "enum": [
+            "local",
+            "docker",
+            "slurm"
+          ],
+          "description": "Default experiment runner"
+        },
+        "researchloop.literature.sources": {
+          "type": "array",
+          "default": [
+            "arxiv",
+            "semanticScholar",
+            "webSearch"
+          ],
+          "items": {
+            "type": "string",
+            "enum": [
+              "arxiv",
+              "semanticScholar",
+              "pubmed",
+              "googleScholar",
+              "webSearch"
+            ]
+          },
+          "description": "Sources to search (academic archives + web)"
+        },
+        "researchloop.literature.maxPapers": {
+          "type": "number",
+          "default": 20,
+          "description": "Maximum papers per search"
+        },
+        "researchloop.literature.defaultCategories": {
+          "type": "array",
+          "default": [
+            "cs.LG",
+            "cs.RO",
+            "cs.AI",
+            "stat.ML"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Default arXiv categories for ML/Robotics"
+        },
+        "researchloop.report.defaultFormat": {
+          "type": "string",
+          "default": "markdown",
+          "enum": [
+            "markdown",
+            "latex"
+          ],
+          "description": "Default report output format"
+        },
+        "researchloop.experiment.maxNoImprove": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Stop experiment loop after N consecutive rounds with no improvement on the primary metric"
+        },
+        "researchloop.experiment.maxExperiments": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum total number of experiments (initial batch + iterative rounds)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "build:prod": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "lint": "eslint src/ webview/src/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "vsce package",
+    "prepackage": "npm run build:prod"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "eslint": "^8.56.0",
+    "openai": "^4.28.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.2.0"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.3.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^9.0.0",
+    "recharts": "^2.12.0",
+    "uuid": "^9.0.0"
+  }
+}
