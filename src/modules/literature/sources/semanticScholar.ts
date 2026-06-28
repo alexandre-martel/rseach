@@ -89,11 +89,13 @@ export class SemanticScholarSource implements IAcademicSource {
       fields: PAPER_FIELDS,
     });
 
-    // Year filtering
-    if (query.yearFrom !== undefined || query.yearTo !== undefined) {
-      const from = query.yearFrom ?? '';
-      const to = query.yearTo ?? '';
-      params.set('year', `${from}-${to}`);
+    // Year filtering — S2 API format: "2020-2023", "2020-", or "-2023"
+    if (query.yearFrom !== undefined && query.yearTo !== undefined) {
+      params.set('year', `${query.yearFrom}-${query.yearTo}`);
+    } else if (query.yearFrom !== undefined) {
+      params.set('year', `${query.yearFrom}-`);
+    } else if (query.yearTo !== undefined) {
+      params.set('year', `-${query.yearTo}`);
     }
 
     const url = `${S2_API_BASE}/paper/search?${params.toString()}`;

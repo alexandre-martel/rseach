@@ -14,6 +14,8 @@ import {
 import type { Paper, Experiment } from '../../core/types';
 import { createRunner, buildCommand, findPython, parseAllMetrics } from './runner';
 import type { RunResult } from './runner';
+import { saveCheckpoint, loadCheckpoint, clearCheckpoint } from './checkpoint';
+import type { ExperimentCheckpoint, ArgSpec } from './checkpoint';
 
 const outputChannel = vscode.window.createOutputChannel('ResearchLoop - Experiments');
 
@@ -121,7 +123,7 @@ ${designSummary || '(No specific experiments yet — generate a general-purpose 
 
 Generate a complete, runnable Python script that:
 1. Defines a model/pipeline appropriate for the research question
-2. Accepts hyperparameters as command-line arguments (matching the experiment designs)
+2. Accepts ALL major model hyperparameters as argparse arguments (at least 5 model params like n_estimators, max_depth, min_samples_split, min_samples_leaf, max_features, criterion — not just operational ones like cv_folds). Each must have a default value, correct type (int/float/str), and choices= for categorical params.
 3. Trains/evaluates and prints metrics to stdout in JSON format: {"metric_name": value, ...}
 4. Handles common edge cases (missing data, GPU availability, etc.)
 
@@ -246,8 +248,10 @@ Respond in JSON: { "experiments": [{ "name": string, "hypothesis": string, "meth
 
   private async runExperiments(input: StepInput, context: ModuleContext): Promise<StepOutput> {
     const question = (input.data.researchQuestion as string) ?? '';
-    const maxNoImprove = (input.data.maxNoImprove as number) ?? 3;
-    const maxExperiments = (input.data.maxExperiments as number) ?? 10;
+    const maxNoImprove = (input.data.maxNoImprove as number) ?? 5;
+    let maxExperiments = (input.data.maxExperiments as number) ?? 10;
+    const resume = (input.data.resume as boolean) ?? false;
+    const additionalExperiments = (input.data.additionalExperiments as number) ?? 0;
     let generatedCode = input.data.generatedCode as GeneratedCode | null;
     const entrypoint = (input.data.entrypoint as string) ?? generatedCode?.entrypoint ?? 'train.py';
     const commandTemplate = (input.data.commandTemplate as string) ?? generatedCode?.command_template;
@@ -278,11 +282,32 @@ Respond in JSON: { "experiments": [{ "name": string, "hypothesis": string, "meth
       outputChannel.appendLine(`\n=== PAPER INSIGHTS FOR EXPERIMENT DESIGN ===\n${paperInsights}\n`);
     }
 
-    const allExperiments: Experiment[] = [];
-    const allIntermediateMetrics: Record<string, number>[][] = [];
+    let allExperiments: Experiment[] = [];
+    let allIntermediateMetrics: Record<string, number>[][] = [];
     let bestMetricValue = -Infinity;
     let primaryMetric = '';
     let noImproveCount = 0;
+
+    // ── Resume from checkpoint ──
+    let checkpoint: ExperimentCheckpoint | null = null;
+    if (resume) {
+      checkpoint = await loadCheckpoint(context.workspacePath, context.sessionId);
+      if (checkpoint) {
+        allExperiments = checkpoint.allExperiments;
+        allIntermediateMetrics = checkpoint.allIntermediateMetrics;
+        bestMetricValue = checkpoint.bestMetricValue;
+        primaryMetric = checkpoint.primaryMetric;
+        noImproveCount = 0; // reset — give it another chance
+        if (additionalExperiments > 0) {
+          maxExperiments = allExperiments.length + additionalExperiments;
+        }
+        outputChannel.appendLine(`\n=== RESUMING FROM CHECKPOINT ===`);
+        outputChannel.appendLine(`Loaded ${allExperiments.length} previous experiments`);
+        outputChannel.appendLine(`Best ${primaryMetric}: ${bestMetricValue}`);
+        outputChannel.appendLine(`Budget: ${maxExperiments - allExperiments.length} more experiments`);
+        outputChannel.appendLine(`==============================\n`);
+      }
+    }
 
     // Helper: write generated code files to projectRoot
     const writeCodeToProject = async (code: GeneratedCode) => {
@@ -311,12 +336,6 @@ Respond in JSON: { "experiments": [{ "name": string, "hypothesis": string, "meth
     };
 
     // Helper: read entrypoint and extract argparse argument specs (name, choices, default, type)
-    interface ArgSpec {
-      name: string;
-      choices?: string[];
-      defaultVal?: string;
-      type?: string;
-    }
     const readArgSpecs = async (): Promise<ArgSpec[]> => {
       try {
         const src = await fs.readFile(path.join(context.projectRoot, entrypoint), 'utf-8');
@@ -348,6 +367,17 @@ Respond in JSON: { "experiments": [{ "name": string, "hypothesis": string, "meth
       } catch { return []; }
     };
 
+    // ── Steps 1-4: Setup (skipped on resume from checkpoint) ──
+    let argSpecs: ArgSpec[] = [];
+    let knownArgs: string[] = [];
+    const operationalArgNames = new Set(['cv_folds', 'folds', 'random_state', 'seed', 'verbose', 'output', 'data_path', 'data_dir', 'save_path', 'log_dir', 'n_jobs']);
+
+    if (checkpoint) {
+      argSpecs = checkpoint.argSpecs;
+      knownArgs = checkpoint.knownArgs;
+      outputChannel.appendLine(`Restored ${argSpecs.length} arg specs from checkpoint`);
+    } else {
+
     // ── Step 1: Ensure code exists ──
     if (generatedCode?.files?.length) {
       await writeCodeToProject(generatedCode);
@@ -369,7 +399,7 @@ Research question: ${question}
 
 Generate a complete, runnable Python script that:
 1. Defines a model/pipeline appropriate for the research question
-2. Accepts hyperparameters as command-line arguments via argparse (e.g. --n_estimators, --learning_rate, --max_depth)
+2. Accepts ALL major model hyperparameters as argparse arguments (at least 5 model params: e.g. n_estimators, max_depth, min_samples_split, min_samples_leaf, max_features, criterion for tree models). Each must have a default, correct type (int/float/str), and choices= for categorical params. Do NOT only add operational params like --cv_folds.
 3. Prints INTERMEDIATE progress as JSON lines during training (e.g. per-fold or per-epoch): {"epoch": 1, "train_loss": 0.5, "val_loss": 0.4}
 4. Prints FINAL metrics as the LAST JSON line on stdout: {"metric_name": value, ...}
 5. Include multiple evaluation metrics (accuracy, f1, precision, recall, etc.) — not just one
@@ -526,7 +556,7 @@ ${errorHistory.slice(-3).join('\n')}
 
 REQUIREMENTS — the script MUST:
 1. Be as simple as possible — prefer scikit-learn or basic PyTorch over complex frameworks
-2. Accept hyperparameters as --key=value command-line arguments (use argparse with DEFAULTS for every arg)
+2. Accept ALL major MODEL hyperparameters as argparse arguments (at least 5 model params, not just cv_folds — e.g. n_estimators, max_depth, min_samples_split, max_features, criterion). Each must have a default, correct type (int/float/str), and choices= for categorical params.
 3. If data is not available locally, generate synthetic data or use a built-in dataset (e.g. sklearn.datasets)
 4. Print INTERMEDIATE progress as JSON lines during training (per-fold/per-epoch): {"fold": 1, "train_acc": 0.9, "val_acc": 0.85}
 5. Print FINAL metrics as the LAST JSON line: {"accuracy": float, "f1_score": float, "precision": float, "recall": float, ...}
@@ -565,8 +595,8 @@ Respond in JSON: {
     }
 
     // ── Step 4: Read the script's CLI arguments ──
-    const argSpecs = await readArgSpecs();
-    const knownArgs = argSpecs.map(a => a.name);
+    argSpecs = await readArgSpecs();
+    knownArgs = argSpecs.map(a => a.name);
     const argDescription = argSpecs.map(a => {
       let desc = `--${a.name}`;
       if (a.type) { desc += ` (${a.type})`; }
@@ -575,6 +605,62 @@ Respond in JSON: {
       return desc;
     }).join('\n  ');
     outputChannel.appendLine(`\nKnown script arguments:\n  ${argDescription || '(none found)'}`);
+
+    // Auto-enrich: if script has too few tuneable model hyperparameters, ask LLM to add more
+    const tuneableArgCount = argSpecs.filter(a => !operationalArgNames.has(a.name)).length;
+    if (tuneableArgCount < 3 && generatedCode?.files?.length) {
+      outputChannel.appendLine(`Only ${tuneableArgCount} tuneable hyperparameter(s) — enriching script with model hyperparameters...`);
+      context.progress?.(0, 'exp:0|Setup|adding model hyperparameters to script...|running');
+      const scriptPath = path.join(context.projectRoot, entrypoint);
+      try {
+        const originalScript = await fs.readFile(scriptPath, 'utf-8');
+        const enrichResp = await context.llm.complete(
+          [{ role: 'user', content: `This training script only accepts these arguments: ${argSpecs.map(a => '--' + a.name).join(', ') || '(none)'}.
+
+For hyperparameter tuning, it needs MORE tuneable model hyperparameters as argparse arguments.
+
+Current script:
+\`\`\`python
+${originalScript}
+\`\`\`
+
+Add argparse arguments for ALL major hyperparameters of the model/algorithm in this script:
+- For tree models (RandomForest, GradientBoosting, etc.): n_estimators, max_depth, min_samples_split, min_samples_leaf, max_features, criterion
+- For neural networks: learning_rate, hidden_size, num_layers, dropout, weight_decay
+- For SVM: C, kernel, gamma
+- Add 5-8 of the most impactful hyperparameters for whatever model is used.
+
+Each argument MUST have a default value, correct type (int/float/str), and choices= for categorical params.
+USE these arguments in the model instantiation (replace hardcoded values).
+Keep everything else IDENTICAL — same output format, same metrics, same logic.
+
+Respond in JSON: { "content": "the full modified Python script" }` }],
+          { temperature: 0.2, responseFormat: 'json' },
+        );
+        const enriched = JSON.parse(enrichResp.content);
+        if (enriched.content) {
+          await fs.writeFile(scriptPath, enriched.content, 'utf-8');
+          const { command: vc, args: va } = buildCommand(commandTemplate, entrypoint, {});
+          const rc = vc === 'python' || vc === 'python3' ? python : vc;
+          const vr = await runner.run({ command: rc, args: va, cwd: context.projectRoot, env: {}, timeout: 300_000, signal: context.signal });
+          if (vr.status === 'completed' && Object.keys(vr.metrics).length > 0) {
+            argSpecs = await readArgSpecs();
+            knownArgs = argSpecs.map(a => a.name);
+            outputChannel.appendLine(`Enriched: ${argSpecs.length} args — ${knownArgs.join(', ')}`);
+            context.progress?.(0, `exp:0|Setup|${argSpecs.length} hyperparameters available|completed`);
+            const mf = generatedCode.files.find(f => f.path === entrypoint);
+            if (mf) { mf.content = enriched.content; }
+          } else {
+            outputChannel.appendLine('Enriched script failed validation — reverting');
+            await fs.writeFile(scriptPath, originalScript, 'utf-8');
+          }
+        }
+      } catch (err) {
+        outputChannel.appendLine(`Enrichment failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    } // end of if (!checkpoint) — setup steps 1-4
 
     // Run a single experiment design and return the Experiment object
     const runOne = async (design: ExperimentDesign, index: number): Promise<Experiment> => {
@@ -673,6 +759,8 @@ Respond in JSON: {
     };
 
     // ── Step 5: Iterative experiment loop — ONE at a time, each informed by previous results ──
+    let reflectionInsights = '';
+
     while (noImproveCount < maxNoImprove && allExperiments.length < maxExperiments) {
       const nextNum = allExperiments.length + 1;
       context.progress?.(
@@ -752,28 +840,34 @@ Respond in JSON: {
           }
         }
 
+        const tuneableParamNames = knownArgs.filter(a => !operationalArgNames.has(a));
         strategyPrompt = `We have ${allExperiments.length} experiment(s). Apply SYSTEMATIC hyperparameter search:
 ${trendAnalysis}
-STRATEGY — follow this priority order:
-1. If a parameter change IMPROVED the metric, push it further in the same direction (e.g. if n_estimators=200 > 100, try 500)
-2. If a parameter change HURT the metric, revert it and try moving the opposite direction or try a different parameter
-3. Change AT MOST 2 hyperparameters at once — changing everything makes it impossible to know what worked
-4. Do NOT repeat a combination that was already tried
-5. If all single-parameter changes have been explored, try promising COMBINATIONS of the best values found so far
+Available tuneable hyperparameters: ${tuneableParamNames.join(', ')}
 
-Explain your reasoning: which parameter are you changing, in which direction, and why you expect it to help.`;
+STRATEGY — DIVERSITY IS CRITICAL:
+1. EXPLORE DIFFERENT parameters — do NOT keep changing the same parameter repeatedly.
+   If you changed n_estimators in the last experiment, change max_depth or min_samples_split this time.
+   Cycle through ALL available hyperparameters before revisiting one you already tried.
+2. If a parameter change IMPROVED the metric, note the good value for later combinations. If it HURT, revert it.
+3. After each tuneable parameter has been explored individually, combine the best values found so far.
+4. Change AT MOST 2 hyperparameters at once — changing everything makes it impossible to know what worked.
+5. Do NOT repeat a combination that was already tried.
+6. Use DESCRIPTIVE experiment names reflecting WHAT you're changing (e.g. "Deeper Trees" or "Entropy Split" — NOT "More Trees III").
+
+Explain your reasoning: which parameter you chose, WHY you picked this one (not one already tried), and what value you expect to help.`;
       }
 
       const response = await context.llm.complete(
         [
           {
             role: 'user',
-            content: `You are an expert ML experiment designer performing systematic hyperparameter optimization.
+            content: `${context.userSkills ? context.userSkills + '\n\n' : ''}You are an expert ML experiment designer performing systematic hyperparameter optimization.
 
 Research question: ${question}
 Primary metric to optimize: ${primaryMetric || '(will be determined by first successful experiment)'} ${primaryMetric ? '(HIGHER is better — maximize it)' : ''}
 Best value so far: ${bestMetricValue === -Infinity ? 'none yet' : bestMetricValue.toFixed(6)}
-${paperInsights ? `\n--- INSIGHTS FROM RESEARCH PAPERS ---\nUse these findings to guide your hyperparameter choices:\n${paperInsights}\n--- END PAPER INSIGHTS ---\n` : ''}
+${paperInsights ? `\n--- INSIGHTS FROM RESEARCH PAPERS ---\nUse these findings to guide your hyperparameter choices:\n${paperInsights}\n--- END PAPER INSIGHTS ---\n` : ''}${reflectionInsights ? `\n--- REFLECTION FROM PREVIOUS ROUND ---\n${reflectionInsights}\n--- END REFLECTION ---\n` : ''}
 The script "${entrypoint}" accepts these arguments:
 ${argSpecPrompt}
 
@@ -820,12 +914,102 @@ Respond in JSON: { "experiments": [{ "name": string (2-4 words), "hypothesis": s
       const improved = reportProgress(exp);
 
       if (allExperiments.length === 1) {
-        // First experiment is always "improved" (it's the baseline)
         noImproveCount = 0;
       } else if (improved) {
         noImproveCount = 0;
       } else {
         noImproveCount++;
+      }
+
+      // ── Checkpoint after each experiment ──
+      await saveCheckpoint(context.workspacePath, context.sessionId, {
+        sessionId: context.sessionId,
+        allExperiments,
+        allIntermediateMetrics,
+        bestMetricValue,
+        primaryMetric,
+        noImproveCount,
+        knownArgs,
+        argSpecs,
+        reflectionInsights,
+        entrypoint,
+        commandTemplate: commandTemplate ?? null,
+        maxExperiments,
+        maxNoImprove,
+        stoppedAt: new Date().toISOString(),
+        stopReason: noImproveCount >= maxNoImprove ? 'maxNoImprove'
+          : allExperiments.length >= maxExperiments ? 'maxExperiments'
+          : 'user_stop',
+      });
+
+      // ── Reflection step — LLM analyzes results before designing next experiment ──
+      if (noImproveCount < maxNoImprove && allExperiments.length < maxExperiments) {
+        context.progress?.(
+          Math.round(allExperiments.length / maxExperiments * 100),
+          `exp:${allExperiments.length}|Reflecting...|analyzing results|running`,
+        );
+
+        const completedExps = allExperiments.filter(e => e.status === 'completed' && Object.keys(e.metrics).length > 0);
+        if (completedExps.length >= 1) {
+          const expTable = completedExps.map((e, i) => {
+            const hp = extractHyperparams(e);
+            const metricsStr = Object.entries(e.metrics).map(([k, v]) => `${k}=${typeof v === 'number' ? v.toFixed(4) : v}`).join(', ');
+            return `  #${i + 1} "${e.name}": ${metricsStr} | params: ${JSON.stringify(hp)}`;
+          }).join('\n');
+
+          try {
+            const reflectionResp = await context.llm.complete(
+              [{
+                role: 'user',
+                content: `${context.userSkills ? context.userSkills + '\n\n' : ''}You are an ML experiment analyst. Analyze the results so far and provide actionable insights for the next experiment.
+
+Research question: ${question}
+Primary metric: ${primaryMetric || '(unknown)'} (higher is better)
+Best value: ${bestMetricValue === -Infinity ? 'N/A' : bestMetricValue.toFixed(6)}
+Experiments without improvement: ${noImproveCount}/${maxNoImprove}
+
+Results so far:
+${expTable}
+
+Available hyperparameters: ${knownArgs.filter(a => !operationalArgNames.has(a)).join(', ')}
+
+Provide a SHORT analysis (3-5 sentences):
+1. What pattern do you see in the results? Which parameters had the most impact?
+2. Are we hitting diminishing returns on any parameter?
+3. What specific parameter + value combination should we try next and WHY?
+4. Is there an interaction between parameters worth exploring?
+
+Be concrete — name parameters and values. No generic advice.`,
+              }],
+              { temperature: 0.3 },
+            );
+            reflectionInsights = reflectionResp.content;
+            outputChannel.appendLine(`\n--- REFLECTION after experiment #${allExperiments.length} ---`);
+            outputChannel.appendLine(reflectionInsights);
+            outputChannel.appendLine('--- END REFLECTION ---\n');
+          } catch {
+            reflectionInsights = '';
+          }
+        }
+
+        // Restore the experiment's completed status in the tree view.
+        // The reflection progress event above overwrote sub-item #N with
+        // "Reflecting... | analyzing results | running". Now that reflection
+        // is done, re-emit the experiment's actual result so the tree view
+        // shows the green checkmark instead of a perpetual spinner.
+        const expNum = allExperiments.indexOf(exp) + 1;
+        const expPct = Math.round(expNum / maxExperiments * 100);
+        if (exp.status === 'failed') {
+          const errLines = (exp.logs ?? '').split('\n').filter(l => l.trim());
+          const lastErr = errLines.slice(-2).join(' | ').slice(0, 150);
+          context.progress?.(expPct, `exp:${expNum}|${exp.name}|CRASHED: ${lastErr}|failed`);
+        } else if (primaryMetric) {
+          const val = exp.metrics[primaryMetric] ?? -Infinity;
+          const marker = improved ? '✓' : '✗';
+          context.progress?.(expPct, `exp:${expNum}|${exp.name}|${marker} ${primaryMetric}=${val.toFixed(4)}|completed`);
+        } else {
+          context.progress?.(expPct, `exp:${expNum}|${exp.name}|completed (no metrics)|completed`);
+        }
       }
     }
 

@@ -106,22 +106,27 @@ export class PaperDeduplicator {
    * returning a new Paper object.
    */
   private merge(target: Paper, source: Paper): Paper {
+    const richer = this.richness(source) >= this.richness(target) ? source : target;
+    const other = richer === source ? target : source;
+
     return {
-      ...source,
+      ...richer,
+      abstract: richer.abstract.length >= other.abstract.length ? richer.abstract : other.abstract,
+      authors: richer.authors.length >= other.authors.length ? richer.authors : other.authors,
       externalIds: {
-        doi: source.externalIds.doi ?? target.externalIds.doi,
-        arxivId: source.externalIds.arxivId ?? target.externalIds.arxivId,
-        pmid: source.externalIds.pmid ?? target.externalIds.pmid,
+        doi: richer.externalIds.doi ?? other.externalIds.doi,
+        arxivId: richer.externalIds.arxivId ?? other.externalIds.arxivId,
+        pmid: richer.externalIds.pmid ?? other.externalIds.pmid,
         semanticScholarId:
-          source.externalIds.semanticScholarId ??
-          target.externalIds.semanticScholarId,
+          richer.externalIds.semanticScholarId ??
+          other.externalIds.semanticScholarId,
       },
-      citationCount: source.citationCount ?? target.citationCount,
-      pdfUrl: source.pdfUrl ?? target.pdfUrl,
+      citationCount: richer.citationCount ?? other.citationCount,
+      pdfUrl: richer.pdfUrl ?? other.pdfUrl,
       codeRepos: [
         ...new Set([
-          ...(source.codeRepos ?? []),
-          ...(target.codeRepos ?? []),
+          ...(richer.codeRepos ?? []),
+          ...(other.codeRepos ?? []),
         ]),
       ],
     };

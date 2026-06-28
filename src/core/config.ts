@@ -57,16 +57,13 @@ export class ConfigManager {
     return this.config.get<number>('llm.costBudget') ?? 0;
   }
 
-  get enabledModules(): string[] {
-    return this.config.get<string[]>('modules.enabled') ?? ['literature', 'code', 'experiment', 'analysis', 'report'];
-  }
-
-  get defaultRunner(): string {
+get defaultRunner(): string {
     return this.config.get<string>('experiment.defaultRunner') ?? 'local';
   }
 
-  get literatureSources(): string[] {
-    return this.config.get<string[]>('literature.sources') ?? ['arxiv', 'semanticScholar'];
+  get literatureSources(): (string | { id: string; name: string; url: string })[] {
+    return this.config.get<(string | { id: string; name: string; url: string })[]>('literature.sources')
+      ?? ['arxiv', 'semanticScholar'];
   }
 
   get maxPapers(): number {
@@ -81,8 +78,20 @@ export class ConfigManager {
     return this.config.get<'markdown' | 'latex'>('report.defaultFormat') ?? 'markdown';
   }
 
+  get telegramEnabled(): boolean {
+    return this.config.get<boolean>('notifications.telegram.enabled') ?? false;
+  }
+
+  get telegramBotToken(): string {
+    return this.config.get<string>('notifications.telegram.botToken') ?? '';
+  }
+
+  get telegramChatId(): string {
+    return this.config.get<string>('notifications.telegram.chatId') ?? '';
+  }
+
   get experimentMaxNoImprove(): number {
-    return this.config.get<number>('experiment.maxNoImprove') ?? 3;
+    return this.config.get<number>('experiment.maxNoImprove') ?? 5;
   }
 
   get experimentMaxExperiments(): number {

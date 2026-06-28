@@ -21,7 +21,10 @@ export interface PaperAnalysis {
  * - Score relevance to the user's research question.
  */
 export class PaperAnalyzer {
-  constructor(private readonly llm: ILLMService) {}
+  constructor(
+    private readonly llm: ILLMService,
+    private readonly userSkills?: string,
+  ) {}
 
   /**
    * Run a full analysis of a paper against a research question.
@@ -99,7 +102,9 @@ export class PaperAnalyzer {
     paper: Paper,
     researchQuestion: string,
   ): string {
-    return [
+    const parts: string[] = [];
+    if (this.userSkills) { parts.push(this.userSkills, ''); }
+    parts.push(
       'Analyze the following academic paper in the context of a research question.',
       'Return your analysis as a JSON object with these fields:',
       '  - summary (string): A concise 2-3 sentence summary of the paper.',
@@ -117,7 +122,8 @@ export class PaperAnalyzer {
       `Abstract: ${paper.abstract}`,
       '',
       'Respond with ONLY the JSON object, no other text.',
-    ].join('\n');
+    );
+    return parts.join('\n');
   }
 
   private parseAnalysisResponse(raw: string): PaperAnalysis {

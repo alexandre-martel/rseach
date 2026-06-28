@@ -14,6 +14,8 @@ import { IAcademicSource, AcademicSearchQuery } from './sources/types';
 import { ArxivSource } from './sources/arxiv';
 import { SemanticScholarSource } from './sources/semanticScholar';
 import { WebSearchSource } from './sources/webSearch';
+import { CustomSource } from './sources/customSource';
+import type { CustomSourceConfig } from './sources/customSource';
 import { PaperAnalyzer } from './analyzer';
 import { PaperDeduplicator } from './deduplicator';
 
@@ -217,7 +219,7 @@ export class LiteratureModule implements IResearchModule {
       );
     }
 
-    const analyzer = new PaperAnalyzer(context.llm);
+    const analyzer = new PaperAnalyzer(context.llm, context.userSkills);
     const analyzed: Paper[] = [];
 
     for (const paper of papers) {
@@ -286,7 +288,7 @@ export class LiteratureModule implements IResearchModule {
    * Build the list of academic sources from the module configuration.
    */
   private buildSources(config: Record<string, unknown>): IAcademicSource[] {
-    const enabledSources = (config.sources as string[]) ?? [
+    const enabledSources = (config.sources as (string | CustomSourceConfig)[]) ?? [
       'arxiv',
       'semanticScholar',
     ];
@@ -294,7 +296,13 @@ export class LiteratureModule implements IResearchModule {
 
     const sources: IAcademicSource[] = [];
 
-    for (const sourceId of enabledSources) {
+    for (const entry of enabledSources) {
+      if (typeof entry === 'object' && entry !== null && 'id' in entry && 'url' in entry) {
+        sources.push(new CustomSource(entry as CustomSourceConfig, this.rateLimiter));
+        continue;
+      }
+
+      const sourceId = entry as string;
       switch (sourceId) {
         case 'arxiv':
           sources.push(new ArxivSource(this.rateLimiter));

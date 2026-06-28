@@ -10,10 +10,14 @@ import type { ResearchExplorerProvider } from './sidebar/researchExplorerProvide
 import type { ResearchSession } from '../core/types';
 import type { PipelineDefinition } from '../pipeline/types';
 import type { ModuleRegistry as PipelineModuleRegistry } from '../pipeline/types';
+import { DEFAULT_RETRY_POLICY } from '../pipeline/types';
 import type { PipelineStore } from '../pipeline/engine';
 import type { PipelineTreeProvider } from './sidebar/pipelineTreeProvider';
 import { PipelineEngine } from '../pipeline/engine';
 import type { Paper, Experiment, Report, ReportSection } from '../core/types';
+import { loadCheckpoint } from '../modules/experiment/checkpoint';
+import type { SkillsManager } from '../skills/manager';
+import { PipelineModuleRegistryAdapter } from '../pipeline/bridge';
 
 interface CommandContext {
   storage: StorageManager;
@@ -26,6 +30,7 @@ interface CommandContext {
   pipelineDefinition: PipelineDefinition;
   pipelineModules: PipelineModuleRegistry;
   pipelineStore: PipelineStore;
+  skillsManager: SkillsManager;
 }
 
 let activePipelineEngine: PipelineEngine | null = null;
@@ -235,13 +240,7 @@ export function registerCommands(context: vscode.ExtensionContext, ctx: CommandC
       if (analyzeStep) {
         analyzeStep.config.researchQuestion = session.question;
       }
-      const designStep = definition.steps.find(s => s.id === 'experiment-design');
-      if (designStep) {
-        designStep.config.researchQuestion = session.question;
-        if (targetMetrics) { designStep.config.targetMetrics = targetMetrics; }
-        if (targetHyperparameters) { designStep.config.targetHyperparameters = targetHyperparameters; }
-      }
-      const codegenStep = definition.steps.find(s => s.id === 'experiment-codegen');
+const codegenStep = definition.steps.find(s => s.id === 'experiment-codegen');
       if (codegenStep) {
         codegenStep.config.researchQuestion = session.question;
       }
@@ -249,7 +248,7 @@ export function registerCommands(context: vscode.ExtensionContext, ctx: CommandC
       if (runStep) {
         runStep.config.researchQuestion = session.question;
         const rlConfig = vscode.workspace.getConfiguration('researchloop');
-        runStep.config.maxNoImprove = rlConfig.get<number>('experiment.maxNoImprove') ?? 3;
+        runStep.config.maxNoImprove = rlConfig.get<number>('experiment.maxNoImprove') ?? 5;
         runStep.config.maxExperiments = rlConfig.get<number>('experiment.maxExperiments') ?? 10;
         if (targetMetrics) { runStep.config.targetMetrics = targetMetrics; }
         if (targetHyperparameters) { runStep.config.targetHyperparameters = targetHyperparameters; }
@@ -258,6 +257,13 @@ export function registerCommands(context: vscode.ExtensionContext, ctx: CommandC
       const reportStep = definition.steps.find(s => s.id === 'report');
       if (reportStep) {
         reportStep.config.researchQuestion = session.question;
+      }
+
+      // Inject user skills into module prompts
+      await ctx.skillsManager.loadAll();
+      const skillsText = ctx.skillsManager.formatForPrompt();
+      if (ctx.pipelineModules instanceof PipelineModuleRegistryAdapter) {
+        ctx.pipelineModules.setUserSkills(skillsText || undefined);
       }
 
       activePipelineEngine = new PipelineEngine(
@@ -372,6 +378,193 @@ export function registerCommands(context: vscode.ExtensionContext, ctx: CommandC
       });
       if (!format) { return; }
       await exportReportToFile(storage, activeSessionId, format.toLowerCase() as 'markdown' | 'latex', logger);
+    }),
+
+    // ── Continue / Restart experiments ──────────────────────────────────
+
+    vscode.commands.registerCommand('researchloop.continueExperiments', async (additionalArg?: number) => {
+      const session = await pickOrGetActiveSession(storage, activeSessionId);
+      if (!session) { return; }
+
+      if (activePipelineEngine) {
+        vscode.window.showWarningMessage('A pipeline is already running. Stop it first.');
+        return;
+      }
+
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceFolder) {
+        vscode.window.showErrorMessage('No workspace folder open.');
+        return;
+      }
+      const storagePath = `${workspaceFolder}/.researchloop`;
+
+      const checkpoint = await loadCheckpoint(storagePath, session.id);
+      if (!checkpoint) {
+        vscode.window.showWarningMessage('No experiment checkpoint found for this session. Run experiments first.');
+        return;
+      }
+
+      let additional = additionalArg ?? 0;
+      if (!additional) {
+        const input = await vscode.window.showInputBox({
+          prompt: `Resume from ${checkpoint.allExperiments.length} experiments (best ${checkpoint.primaryMetric}: ${checkpoint.bestMetricValue.toFixed(4)}). How many more?`,
+          placeHolder: '5',
+          value: '5',
+        });
+        if (!input) { return; }
+        additional = parseInt(input, 10) || 5;
+      }
+
+      activeSessionId = session.id;
+
+      const rlConfig = vscode.workspace.getConfiguration('researchloop');
+      const definition: PipelineDefinition = {
+        id: 'continue-experiments',
+        name: 'Continue Experiments',
+        steps: [{
+          id: 'experiment-run',
+          name: 'Run Experiments (continued)',
+          moduleId: 'experiment',
+          dependsOn: [],
+          config: {
+            moduleStepId: 'run',
+            researchQuestion: session.question,
+            resume: true,
+            additionalExperiments: additional,
+            maxNoImprove: rlConfig.get<number>('experiment.maxNoImprove') ?? 5,
+            maxExperiments: checkpoint.allExperiments.length + additional,
+          },
+        }],
+        defaultRetryPolicy: DEFAULT_RETRY_POLICY,
+      };
+
+      await ctx.skillsManager.loadAll();
+      const contSkills = ctx.skillsManager.formatForPrompt();
+      if (ctx.pipelineModules instanceof PipelineModuleRegistryAdapter) {
+        ctx.pipelineModules.setUserSkills(contSkills || undefined);
+      }
+
+      activePipelineEngine = new PipelineEngine(definition, ctx.pipelineModules, ctx.pipelineStore, eventBus);
+
+      ctx.pipelineProvider.setSteps(
+        definition.steps.map(s => ({ id: s.id, label: s.name, status: 'pending' as const })),
+      );
+
+      vscode.commands.executeCommand('setContext', 'researchloop.pipelineState', 'running');
+      logger.info(`Continuing experiments for session: ${session.name} (+${additional})`);
+
+      vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Window, title: 'Continue Experiments' },
+        async (progress) => {
+          progress.report({ message: `$(sync~spin) Resuming from ${checkpoint!.allExperiments.length} experiments...` });
+
+          const onStepDone = () => {
+            progress.report({ message: 'Done' });
+          };
+          eventBus.on('pipeline:stepCompleted', onStepDone);
+          eventBus.on('pipeline:stepFailed', onStepDone);
+
+          try {
+            await activePipelineEngine!.start(session);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            vscode.window.showErrorMessage(`Continue failed: ${msg}`);
+            vscode.commands.executeCommand('setContext', 'researchloop.pipelineState', 'idle');
+            return;
+          }
+
+          await new Promise<void>(resolve => {
+            const cleanup = () => {
+              eventBus.off('pipeline:stepCompleted', onStepDone);
+              eventBus.off('pipeline:stepFailed', onStepDone);
+              resolve();
+            };
+            eventBus.once('pipeline:completed', cleanup);
+            eventBus.once('pipeline:failed', cleanup);
+            eventBus.once('pipeline:cancelled', cleanup);
+          });
+        },
+      );
+    }),
+
+    vscode.commands.registerCommand('researchloop.restartExperiments', async () => {
+      const session = await pickOrGetActiveSession(storage, activeSessionId);
+      if (!session) { return; }
+
+      if (activePipelineEngine) {
+        vscode.window.showWarningMessage('A pipeline is already running. Stop it first.');
+        return;
+      }
+
+      activeSessionId = session.id;
+      const rlConfig = vscode.workspace.getConfiguration('researchloop');
+
+      const definition: PipelineDefinition = {
+        id: 'restart-experiments',
+        name: 'Restart Experiments',
+        steps: [{
+          id: 'experiment-run',
+          name: 'Run Experiments (fresh)',
+          moduleId: 'experiment',
+          dependsOn: [],
+          config: {
+            moduleStepId: 'run',
+            researchQuestion: session.question,
+            resume: false,
+            maxNoImprove: rlConfig.get<number>('experiment.maxNoImprove') ?? 5,
+            maxExperiments: rlConfig.get<number>('experiment.maxExperiments') ?? 10,
+          },
+        }],
+        defaultRetryPolicy: DEFAULT_RETRY_POLICY,
+      };
+
+      await ctx.skillsManager.loadAll();
+      const restSkills = ctx.skillsManager.formatForPrompt();
+      if (ctx.pipelineModules instanceof PipelineModuleRegistryAdapter) {
+        ctx.pipelineModules.setUserSkills(restSkills || undefined);
+      }
+
+      activePipelineEngine = new PipelineEngine(definition, ctx.pipelineModules, ctx.pipelineStore, eventBus);
+
+      ctx.pipelineProvider.setSteps(
+        definition.steps.map(s => ({ id: s.id, label: s.name, status: 'pending' as const })),
+      );
+
+      vscode.commands.executeCommand('setContext', 'researchloop.pipelineState', 'running');
+      logger.info(`Restarting experiments for session: ${session.name}`);
+
+      vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Window, title: 'Restart Experiments' },
+        async (progress) => {
+          progress.report({ message: '$(sync~spin) Restarting experiments from scratch...' });
+
+          const onStepDone = () => {
+            progress.report({ message: 'Done' });
+          };
+          eventBus.on('pipeline:stepCompleted', onStepDone);
+          eventBus.on('pipeline:stepFailed', onStepDone);
+
+          try {
+            await activePipelineEngine!.start(session);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            vscode.window.showErrorMessage(`Restart failed: ${msg}`);
+            vscode.commands.executeCommand('setContext', 'researchloop.pipelineState', 'idle');
+            return;
+          }
+
+          await new Promise<void>(resolve => {
+            const cleanup = () => {
+              eventBus.off('pipeline:stepCompleted', onStepDone);
+              eventBus.off('pipeline:stepFailed', onStepDone);
+              resolve();
+            };
+            eventBus.once('pipeline:completed', cleanup);
+            eventBus.once('pipeline:failed', cleanup);
+            eventBus.once('pipeline:cancelled', cleanup);
+          });
+        },
+      );
     }),
   );
 

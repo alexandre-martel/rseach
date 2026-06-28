@@ -27,6 +27,8 @@ import { PipelineTreeProvider } from './ui/sidebar/pipelineTreeProvider';
 import { StatusBarManager } from './ui/statusBar';
 import { WebviewManager } from './ui/webview/webviewManager';
 import { registerCommands } from './ui/commands';
+import { TelegramService } from './notifications/telegram';
+import { SkillsManager } from './skills/manager';
 
 export async function activate(context: vscode.ExtensionContext) {
   const logger = new Logger();
@@ -96,10 +98,25 @@ export async function activate(context: vscode.ExtensionContext) {
   const pipelineModules = new PipelineModuleRegistryAdapter(
     moduleRegistry,
     llmService,
-    (_moduleId: string) => ({}),
+    (moduleId: string) => {
+      if (moduleId === 'literature') {
+        return {
+          sources: config.literatureSources,
+          semanticScholarApiKey: config.get<string>('literature.semanticScholarApiKey') ?? '',
+        };
+      }
+      return {};
+    },
     storagePath,
     workspaceFolder ?? storagePath,
   );
+
+  // Skills
+  const skillsManager = new SkillsManager(
+    context.globalStorageUri.fsPath,
+    workspaceFolder ?? null,
+  );
+  await skillsManager.loadAll();
 
   // UI providers
   const explorerProvider = new ResearchExplorerProvider(storage, eventBus);
@@ -110,7 +127,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Webview manager
   const webviewManager = new WebviewManager(context, eventBus);
-  webviewManager.setDependencies(config, llmRegistry, storage);
+  webviewManager.setDependencies(config, llmRegistry, storage, skillsManager);
 
   // Status bar
   const statusBar = new StatusBarManager(eventBus);
@@ -128,11 +145,98 @@ export async function activate(context: vscode.ExtensionContext) {
     pipelineDefinition: DEFAULT_RESEARCH_PIPELINE,
     pipelineModules,
     pipelineStore,
+    skillsManager,
   });
+
+  // ── Telegram notifications (disabled by default) ──
+  let telegramService: TelegramService | null = null;
+
+  const initTelegram = () => {
+    if (config.telegramEnabled && config.telegramBotToken && config.telegramChatId) {
+      telegramService = new TelegramService(config.telegramBotToken, config.telegramChatId);
+
+      // Pipeline events → Telegram notifications
+      eventBus.on('pipeline:started', ({ sessionId }) => {
+        telegramService?.sendMessage(`🔬 Pipeline started for session <b>${sessionId}</b>`);
+      });
+
+      eventBus.on('pipeline:stepCompleted', ({ stepId }) => {
+        const stepDef = DEFAULT_RESEARCH_PIPELINE.steps.find(s => s.id === stepId);
+        telegramService?.sendMessage(`✅ <b>${stepDef?.name ?? stepId}</b> completed`);
+      });
+
+      eventBus.on('pipeline:stepProgress', ({ message }) => {
+        if (message?.includes('exp:') && (message.includes('✓') || message.includes('✗'))) {
+          telegramService?.sendMessage(`📊 ${message}`);
+        }
+      });
+
+      eventBus.on('pipeline:completed', () => {
+        telegramService?.sendMessage(
+          '🏁 Pipeline completed!\n\nCommands: /status /continue /restart',
+        );
+      });
+
+      eventBus.on('pipeline:failed', ({ error }) => {
+        telegramService?.sendMessage(`❌ Pipeline failed: ${error}`);
+      });
+
+      eventBus.on('experiment:checkpointed', ({ experimentCount, bestMetric, bestValue, stopReason }) => {
+        telegramService?.sendMessage(
+          `📋 Experiments paused (${stopReason})\n` +
+          `Ran: ${experimentCount} | Best ${bestMetric}: ${bestValue.toFixed(4)}\n\n` +
+          `/continue — resume with more budget\n` +
+          `/continue 10 — add 10 experiments\n` +
+          `/restart — start fresh`,
+        );
+      });
+
+      // Telegram commands → VS Code actions
+      telegramService.onCommand((cmd, args) => {
+        switch (cmd) {
+          case 'status':
+            telegramService?.sendMessage('📡 ResearchLoop is active. Use /continue or /restart.');
+            break;
+          case 'pause':
+            vscode.commands.executeCommand('researchloop.pausePipeline');
+            telegramService?.sendMessage('⏸ Pipeline paused');
+            break;
+          case 'resume':
+            vscode.commands.executeCommand('researchloop.resumePipeline');
+            telegramService?.sendMessage('▶️ Pipeline resumed');
+            break;
+          case 'stop':
+            vscode.commands.executeCommand('researchloop.cancelPipeline');
+            telegramService?.sendMessage('⏹ Pipeline stopped');
+            break;
+          case 'continue': {
+            const n = parseInt(args, 10) || 5;
+            vscode.commands.executeCommand('researchloop.continueExperiments', n);
+            telegramService?.sendMessage(`🔄 Continuing with ${n} more experiments...`);
+            break;
+          }
+          case 'restart':
+            vscode.commands.executeCommand('researchloop.restartExperiments');
+            telegramService?.sendMessage('🔄 Restarting experiments from scratch...');
+            break;
+          default:
+            telegramService?.sendMessage(
+              `Unknown command: /${cmd}\n\n` +
+              'Available: /status /pause /resume /stop /continue /restart',
+            );
+        }
+      });
+
+      telegramService.start();
+      logger.info('Telegram notifications enabled');
+    }
+  };
+
+  initTelegram();
 
   // React to config changes
   context.subscriptions.push(
-    config.onDidChange(() => {
+    config.onDidChange((e) => {
       claudeProvider.configure({
         apiKey: config.claudeApiKey,
         defaultModel: config.claudeModel,
@@ -154,6 +258,13 @@ export async function activate(context: vscode.ExtensionContext) {
         maxTokens: config.tokenBudget,
         maxCostUsd: config.costBudget,
       });
+
+      // Reinitialize Telegram if settings changed
+      if (e.affectsConfiguration('researchloop.notifications.telegram')) {
+        telegramService?.stop();
+        telegramService = null;
+        initTelegram();
+      }
     }),
   );
 
@@ -163,6 +274,7 @@ export async function activate(context: vscode.ExtensionContext) {
   // Cleanup
   context.subscriptions.push({
     dispose() {
+      telegramService?.stop();
       eventBus.dispose();
       statusBar.dispose();
       logger.dispose();

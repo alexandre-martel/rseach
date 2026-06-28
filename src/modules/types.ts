@@ -26,6 +26,7 @@ export interface ModuleContext {
   signal: AbortSignal;
   workspacePath: string;
   projectRoot: string;
+  userSkills?: string;
   progress?: (pct: number, message?: string) => void;
 }
 

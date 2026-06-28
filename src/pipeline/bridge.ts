@@ -16,6 +16,7 @@ class ModuleAdapter implements PipelineModule {
     private readonly moduleConfig: Record<string, unknown>,
     private readonly workspacePath: string,
     private readonly projectRoot: string,
+    private readonly userSkills?: string,
   ) {}
 
   async executeStep(
@@ -30,6 +31,7 @@ class ModuleAdapter implements PipelineModule {
       signal: context.abortSignal,
       workspacePath: this.workspacePath,
       projectRoot: this.projectRoot,
+      userSkills: this.userSkills,
       progress: context.progress,
     };
     // Use moduleStepId from config if available, otherwise fall back to pipeline stepId
@@ -44,6 +46,8 @@ class ModuleAdapter implements PipelineModule {
  * service and config the module expects.
  */
 export class PipelineModuleRegistryAdapter implements PipelineModuleRegistry {
+  private _userSkills?: string;
+
   constructor(
     private readonly moduleRegistry: ModuleRegistry,
     private readonly llmService: ILLMService,
@@ -52,10 +56,14 @@ export class PipelineModuleRegistryAdapter implements PipelineModuleRegistry {
     private readonly projectRoot: string = '',
   ) {}
 
+  setUserSkills(skills: string | undefined): void {
+    this._userSkills = skills;
+  }
+
   get(moduleId: string): PipelineModule | undefined {
     const mod = this.moduleRegistry.get(moduleId);
     if (!mod) { return undefined; }
     const config = this.configProvider(moduleId);
-    return new ModuleAdapter(mod, this.llmService, config, this.workspacePath, this.projectRoot);
+    return new ModuleAdapter(mod, this.llmService, config, this.workspacePath, this.projectRoot, this._userSkills);
   }
 }

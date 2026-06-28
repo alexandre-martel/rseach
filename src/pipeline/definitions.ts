@@ -35,24 +35,17 @@ export const DEFAULT_RESEARCH_PIPELINE: PipelineDefinition = {
       optional: true,
     },
     {
-      id: 'experiment-design',
-      name: 'Experiment Design',
-      moduleId: 'experiment',
-      dependsOn: ['literature-analyze'],
-      config: { moduleStepId: 'design' },
-    },
-    {
       id: 'experiment-codegen',
       name: 'Generate Code',
       moduleId: 'experiment',
-      dependsOn: ['experiment-design', 'code-extraction'],
+      dependsOn: ['literature-analyze', 'code-extraction'],
       config: { moduleStepId: 'generate-code' },
     },
     {
       id: 'experiment-run',
       name: 'Run Experiments',
       moduleId: 'experiment',
-      dependsOn: ['experiment-design', 'experiment-codegen', 'literature-analyze'],
+      dependsOn: ['experiment-codegen', 'literature-analyze'],
       config: { moduleStepId: 'run' },
     },
     {

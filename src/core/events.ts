@@ -15,6 +15,13 @@ export interface EventMap {
   'pipeline:completed': { sessionId: string };
   'pipeline:failed': { sessionId: string; error: string };
   'pipeline:cancelled': { sessionId: string };
+  'experiment:checkpointed': {
+    sessionId: string;
+    experimentCount: number;
+    bestMetric: string;
+    bestValue: number;
+    stopReason: string;
+  };
   'hypertuning:trialStarted': { sessionId: string; trial: Trial };
   'hypertuning:trialCompleted': { sessionId: string; trial: Trial };
   'hypertuning:trialFailed': { sessionId: string; trial: Trial };

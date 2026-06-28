@@ -125,6 +125,16 @@
         "command": "researchloop.runResearch",
         "title": "ResearchLoop: Run Research",
         "icon": "$(play)"
+      },
+      {
+        "command": "researchloop.continueExperiments",
+        "title": "ResearchLoop: Continue Experiments",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "researchloop.restartExperiments",
+        "title": "ResearchLoop: Restart Experiments",
+        "icon": "$(debug-restart)"
       }
     ],
     "menus": {
@@ -220,21 +230,7 @@
           "default": 0,
           "description": "Maximum cost in USD per session (0 = unlimited)"
         },
-        "researchloop.modules.enabled": {
-          "type": "array",
-          "default": [
-            "literature",
-            "code",
-            "experiment",
-            "analysis",
-            "report"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "description": "Enabled research modules"
-        },
-        "researchloop.experiment.defaultRunner": {
+"researchloop.experiment.defaultRunner": {
           "type": "string",
           "default": "local",
           "enum": [
@@ -252,16 +248,27 @@
             "webSearch"
           ],
           "items": {
-            "type": "string",
-            "enum": [
-              "arxiv",
-              "semanticScholar",
-              "pubmed",
-              "googleScholar",
-              "webSearch"
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "arxiv",
+                  "semanticScholar",
+                  "webSearch"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string", "description": "Unique identifier for this source" },
+                  "name": { "type": "string", "description": "Display name" },
+                  "url": { "type": "string", "format": "uri", "description": "Website URL (used as site: filter)" }
+                },
+                "required": ["id", "name", "url"]
+              }
             ]
           },
-          "description": "Sources to search (academic archives + web)"
+          "description": "Sources to search. Built-in: arxiv, semanticScholar, webSearch. Custom: {id, name, url} objects."
         },
         "researchloop.literature.maxPapers": {
           "type": "number",
@@ -290,9 +297,24 @@
           ],
           "description": "Default report output format"
         },
+        "researchloop.notifications.telegram.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Telegram bot for pipeline notifications and remote control (/status, /pause, /continue, /restart)"
+        },
+        "researchloop.notifications.telegram.botToken": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Telegram Bot Token from [@BotFather](https://t.me/botfather)"
+        },
+        "researchloop.notifications.telegram.chatId": {
+          "type": "string",
+          "default": "",
+          "description": "Telegram Chat ID to send messages to (use @userinfobot to find yours)"
+        },
         "researchloop.experiment.maxNoImprove": {
           "type": "number",
-          "default": 3,
+          "default": 5,
           "minimum": 1,
           "maximum": 20,
           "description": "Stop experiment loop after N consecutive rounds with no improvement on the primary metric"
