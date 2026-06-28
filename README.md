@@ -57,6 +57,10 @@ Open **ResearchLoop: Settings** from the command palette to configure:
 
 > If you open multiple VS Code workspaces with Telegram enabled, messages are prefixed with `[workspace-name]` so you know which instance is talking. Each instance processes commands independently.
 
+## Disclaimer
+
+This extension is in **early development (beta)**. Features may change, break, or behave unexpectedly. Use at your own risk — always review generated code before running experiments on sensitive data. Feedback and bug reports are welcome via [GitHub Issues](https://github.com/alexandre-martel/rseach/issues).
+
 ## Requirements
 
 - VS Code 1.85+

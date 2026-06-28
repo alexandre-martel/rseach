@@ -27,6 +27,7 @@ export class TelegramService implements INotificationService {
   private abortController: AbortController | null = null;
   private sendDisabled = false;
   private consecutiveFailures = 0;
+  private disabledAt = 0;
 
   constructor(
     private readonly botToken: string,
@@ -42,7 +43,16 @@ export class TelegramService implements INotificationService {
     text: string,
     options?: { parseMode?: 'HTML' | 'Markdown' },
   ): Promise<void> {
-    if (!this.isEnabled() || this.sendDisabled) { return; }
+    if (!this.isEnabled()) { return; }
+    if (this.sendDisabled) {
+      if (Date.now() - this.disabledAt > 5 * 60_000) {
+        this.sendDisabled = false;
+        this.consecutiveFailures = 0;
+        this.log?.('[telegram] Re-enabling after cooldown...');
+      } else {
+        return;
+      }
+    }
 
     const url = `${TELEGRAM_API}${this.botToken}/sendMessage`;
     const body = JSON.stringify({
@@ -75,7 +85,8 @@ export class TelegramService implements INotificationService {
       this.log?.(`[telegram] sendMessage failed: ${msg}`);
       if (this.consecutiveFailures >= 2) {
         this.sendDisabled = true;
-        this.log?.('[telegram] Too many failures — notifications disabled for this session. Check your botToken and chatId.');
+        this.disabledAt = Date.now();
+        this.log?.('[telegram] Too many failures — notifications paused for 5 min. Check your botToken and chatId.');
       }
     }
   }

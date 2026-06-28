@@ -494,11 +494,12 @@ const codegenStep = definition.steps.find(s => s.id === 'experiment-codegen');
     // ── Continue / Restart experiments ──────────────────────────────────
 
     vscode.commands.registerCommand('researchloop.continueExperiments', async (additionalArg?: number) => {
-      const session = await pickOrGetActiveSession(storage, activeSessionId);
+      const fromTelegram = additionalArg !== undefined;
+      const session = await pickOrGetActiveSession(storage, activeSessionId, !fromTelegram);
       if (!session) { return; }
 
       if (activePipelineEngine) {
-        vscode.window.showWarningMessage('A pipeline is already running. Stop it first.');
+        if (!fromTelegram) { vscode.window.showWarningMessage('A pipeline is already running. Stop it first.'); }
         return;
       }
 
@@ -614,12 +615,12 @@ const codegenStep = definition.steps.find(s => s.id === 'experiment-codegen');
       );
     }),
 
-    vscode.commands.registerCommand('researchloop.restartExperiments', async () => {
-      const session = await pickOrGetActiveSession(storage, activeSessionId);
+    vscode.commands.registerCommand('researchloop.restartExperiments', async (fromTelegram?: boolean) => {
+      const session = await pickOrGetActiveSession(storage, activeSessionId, !fromTelegram);
       if (!session) { return; }
 
       if (activePipelineEngine) {
-        vscode.window.showWarningMessage('A pipeline is already running. Stop it first.');
+        if (!fromTelegram) { vscode.window.showWarningMessage('A pipeline is already running. Stop it first.'); }
         return;
       }
 
@@ -813,6 +814,7 @@ const codegenStep = definition.steps.find(s => s.id === 'experiment-codegen');
 async function pickOrGetActiveSession(
   storage: StorageManager,
   activeSessionId: string | null,
+  interactive = true,
 ): Promise<ResearchSession | undefined> {
   if (activeSessionId) {
     try {
@@ -824,12 +826,19 @@ async function pickOrGetActiveSession(
 
   const sessions = await storage.listSessions();
   if (sessions.length === 0) {
-    vscode.window.showWarningMessage('No research sessions found. Create one first.');
+    if (interactive) {
+      vscode.window.showWarningMessage('No research sessions found. Create one first.');
+    }
     return undefined;
   }
 
   if (sessions.length === 1) {
     return sessions[0];
+  }
+
+  if (!interactive) {
+    const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+    return sorted[0];
   }
 
   const picked = await vscode.window.showQuickPick(

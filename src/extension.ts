@@ -268,7 +268,7 @@ export async function activate(context: vscode.ExtensionContext) {
             break;
           }
           case 'restart':
-            vscode.commands.executeCommand('researchloop.restartExperiments');
+            vscode.commands.executeCommand('researchloop.restartExperiments', true);
             telegramService?.sendMessage(`${tag} 🔄 Restarting experiments from scratch...`);
             break;
           case 'new':
