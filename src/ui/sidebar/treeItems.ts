@@ -128,10 +128,15 @@ export class PipelineStepTreeItem extends vscode.TreeItem {
     public readonly status: PipelineStepStatus,
     public readonly progress?: number,
     hasChildren = false,
+    currentDetail?: string,
   ) {
     super(label, hasChildren ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None);
     this.contextValue = `step-${status}`;
-    this.description = progress !== undefined ? `${progress}%` : status;
+    if (currentDetail && status === 'running') {
+      this.description = currentDetail;
+    } else {
+      this.description = progress !== undefined ? `${progress}%` : status;
+    }
     this.iconPath = new vscode.ThemeIcon(
       status === 'running' ? 'loading~spin' :
       status === 'completed' ? 'check' :

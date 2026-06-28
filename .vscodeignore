@@ -5,9 +5,12 @@ webview/src/
 test/
 node_modules/
 .gitignore
-.eslintrc.json
+.eslintrc*
 tsconfig.json
 tsconfig.webview.json
 esbuild.mjs
 *.map
 .claude/
+.researchloop/
+**/*.ts
+!dist/**

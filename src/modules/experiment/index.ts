@@ -287,6 +287,7 @@ Respond in JSON: { "experiments": [{ "name": string, "hypothesis": string, "meth
     let bestMetricValue = -Infinity;
     let primaryMetric = '';
     let noImproveCount = 0;
+    let reflectionInsights = '';
 
     // ── Resume from checkpoint ──
     let checkpoint: ExperimentCheckpoint | null = null;
@@ -375,7 +376,11 @@ Respond in JSON: { "experiments": [{ "name": string, "hypothesis": string, "meth
     if (checkpoint) {
       argSpecs = checkpoint.argSpecs;
       knownArgs = checkpoint.knownArgs;
+      reflectionInsights = checkpoint.reflectionInsights ?? '';
       outputChannel.appendLine(`Restored ${argSpecs.length} arg specs from checkpoint`);
+      if (reflectionInsights) {
+        outputChannel.appendLine(`Restored reflection insights from last round`);
+      }
     } else {
 
     // ── Step 1: Ensure code exists ──
@@ -759,7 +764,6 @@ Respond in JSON: { "content": "the full modified Python script" }` }],
     };
 
     // ── Step 5: Iterative experiment loop — ONE at a time, each informed by previous results ──
-    let reflectionInsights = '';
 
     while (noImproveCount < maxNoImprove && allExperiments.length < maxExperiments) {
       const nextNum = allExperiments.length + 1;

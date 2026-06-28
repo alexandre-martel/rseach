@@ -372,6 +372,117 @@ const codegenStep = definition.steps.find(s => s.id === 'experiment-codegen');
       vscode.commands.executeCommand('researchloop.startPipeline');
     }),
 
+    vscode.commands.registerCommand('researchloop.newSessionAuto', async (question?: string) => {
+      if (!question) {
+        vscode.commands.executeCommand('researchloop.newSession');
+        return;
+      }
+
+      if (activePipelineEngine) {
+        logger.warn('Cannot start new session — a pipeline is already running.');
+        return;
+      }
+
+      const name = question.length > 60 ? question.substring(0, 57) + '...' : question;
+
+      const session: ResearchSession = {
+        id: generateId(),
+        name,
+        question,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        status: 'active',
+        pipelineId: 'default-research-loop',
+        papers: [],
+        experiments: [],
+        report: null,
+        tags: [],
+        notes: '',
+        llmConfig: {
+          provider: ctx.llmRegistry.getActiveId() ?? 'ollama',
+          model: '',
+        },
+        tokenUsage: {
+          totalPromptTokens: 0,
+          totalCompletionTokens: 0,
+          totalCost: 0,
+          byProvider: {},
+          byStep: {},
+        },
+        schemaVersion: 1,
+      };
+
+      await storage.saveSession(session);
+      activeSessionId = session.id;
+      webviewManager.setActiveSession(session.id);
+      eventBus.emit('session:created', session);
+      logger.info(`Created session (auto): ${name}`);
+
+      const definition = JSON.parse(JSON.stringify(ctx.pipelineDefinition)) as typeof ctx.pipelineDefinition;
+      const rlConfig = vscode.workspace.getConfiguration('researchloop');
+
+      const searchStep = definition.steps.find(s => s.id === 'literature-search');
+      if (searchStep) {
+        searchStep.config.query = question;
+        searchStep.config.researchQuestion = question;
+        searchStep.config.categories = rlConfig.get<string[]>('literature.defaultCategories') ?? ['cs.LG', 'cs.RO', 'cs.AI', 'stat.ML'];
+        searchStep.config.maxResults = rlConfig.get<number>('literature.maxPapers') ?? 20;
+      }
+      const analyzeStep = definition.steps.find(s => s.id === 'literature-analyze');
+      if (analyzeStep) { analyzeStep.config.researchQuestion = question; }
+      const codegenStep = definition.steps.find(s => s.id === 'experiment-codegen');
+      if (codegenStep) { codegenStep.config.researchQuestion = question; }
+      const runStep = definition.steps.find(s => s.id === 'experiment-run');
+      if (runStep) {
+        runStep.config.researchQuestion = question;
+        runStep.config.maxNoImprove = rlConfig.get<number>('experiment.maxNoImprove') ?? 5;
+        runStep.config.maxExperiments = rlConfig.get<number>('experiment.maxExperiments') ?? 10;
+      }
+      const reportStep = definition.steps.find(s => s.id === 'report');
+      if (reportStep) { reportStep.config.researchQuestion = question; }
+
+      await ctx.skillsManager.loadAll();
+      const skillsText = ctx.skillsManager.formatForPrompt();
+      if (ctx.pipelineModules instanceof PipelineModuleRegistryAdapter) {
+        ctx.pipelineModules.setUserSkills(skillsText || undefined);
+      }
+
+      activePipelineEngine = new PipelineEngine(definition, ctx.pipelineModules, ctx.pipelineStore, eventBus);
+      ctx.pipelineProvider.setSteps(
+        definition.steps.map(s => ({ id: s.id, label: s.name, status: 'pending' as const })),
+      );
+      vscode.commands.executeCommand('setContext', 'researchloop.pipelineState', 'running');
+      logger.info(`Auto-starting pipeline for: ${name}`);
+
+      vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Window, title: 'Research Pipeline' },
+        async (progress) => {
+          progress.report({ message: `$(sync~spin) "${name}"...` });
+          const onStepDone = () => { progress.report({ message: 'Done' }); };
+          eventBus.on('pipeline:stepCompleted', onStepDone);
+          eventBus.on('pipeline:stepFailed', onStepDone);
+          try {
+            await activePipelineEngine!.start(session);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.error(`Auto pipeline failed to start: ${msg}`);
+            vscode.commands.executeCommand('setContext', 'researchloop.pipelineState', 'idle');
+            return;
+          }
+          await new Promise<void>(resolve => {
+            const cleanup = () => {
+              eventBus.off('pipeline:stepCompleted', onStepDone);
+              eventBus.off('pipeline:stepFailed', onStepDone);
+              resolve();
+            };
+            eventBus.once('pipeline:completed', cleanup);
+            eventBus.once('pipeline:failed', cleanup);
+            eventBus.once('pipeline:cancelled', cleanup);
+          });
+        },
+      );
+    }),
+
     vscode.commands.registerCommand('researchloop.exportReport', async (formatArg?: string) => {
       const format = formatArg ?? await vscode.window.showQuickPick(['Markdown', 'LaTeX'], {
         placeHolder: 'Select export format',
@@ -421,20 +532,36 @@ const codegenStep = definition.steps.find(s => s.id === 'experiment-codegen');
       const definition: PipelineDefinition = {
         id: 'continue-experiments',
         name: 'Continue Experiments',
-        steps: [{
-          id: 'experiment-run',
-          name: 'Run Experiments (continued)',
-          moduleId: 'experiment',
-          dependsOn: [],
-          config: {
-            moduleStepId: 'run',
-            researchQuestion: session.question,
-            resume: true,
-            additionalExperiments: additional,
-            maxNoImprove: rlConfig.get<number>('experiment.maxNoImprove') ?? 5,
-            maxExperiments: checkpoint.allExperiments.length + additional,
+        steps: [
+          {
+            id: 'experiment-run',
+            name: 'Run Experiments (continued)',
+            moduleId: 'experiment',
+            dependsOn: [],
+            config: {
+              moduleStepId: 'run',
+              researchQuestion: session.question,
+              resume: true,
+              additionalExperiments: additional,
+              maxNoImprove: rlConfig.get<number>('experiment.maxNoImprove') ?? 5,
+              maxExperiments: checkpoint.allExperiments.length + additional,
+            },
           },
-        }],
+          {
+            id: 'analysis',
+            name: 'Analyze Results',
+            moduleId: 'analysis',
+            dependsOn: ['experiment-run'],
+            config: { moduleStepId: 'analyze' },
+          },
+          {
+            id: 'report',
+            name: 'Generate Report',
+            moduleId: 'report',
+            dependsOn: ['analysis'],
+            config: { moduleStepId: 'generate' },
+          },
+        ],
         defaultRetryPolicy: DEFAULT_RETRY_POLICY,
       };
 
@@ -502,19 +629,35 @@ const codegenStep = definition.steps.find(s => s.id === 'experiment-codegen');
       const definition: PipelineDefinition = {
         id: 'restart-experiments',
         name: 'Restart Experiments',
-        steps: [{
-          id: 'experiment-run',
-          name: 'Run Experiments (fresh)',
-          moduleId: 'experiment',
-          dependsOn: [],
-          config: {
-            moduleStepId: 'run',
-            researchQuestion: session.question,
-            resume: false,
-            maxNoImprove: rlConfig.get<number>('experiment.maxNoImprove') ?? 5,
-            maxExperiments: rlConfig.get<number>('experiment.maxExperiments') ?? 10,
+        steps: [
+          {
+            id: 'experiment-run',
+            name: 'Run Experiments (fresh)',
+            moduleId: 'experiment',
+            dependsOn: [],
+            config: {
+              moduleStepId: 'run',
+              researchQuestion: session.question,
+              resume: false,
+              maxNoImprove: rlConfig.get<number>('experiment.maxNoImprove') ?? 5,
+              maxExperiments: rlConfig.get<number>('experiment.maxExperiments') ?? 10,
+            },
           },
-        }],
+          {
+            id: 'analysis',
+            name: 'Analyze Results',
+            moduleId: 'analysis',
+            dependsOn: ['experiment-run'],
+            config: { moduleStepId: 'analyze' },
+          },
+          {
+            id: 'report',
+            name: 'Generate Report',
+            moduleId: 'report',
+            dependsOn: ['analysis'],
+            config: { moduleStepId: 'generate' },
+          },
+        ],
         defaultRetryPolicy: DEFAULT_RETRY_POLICY,
       };
 

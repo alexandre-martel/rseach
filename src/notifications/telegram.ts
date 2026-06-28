@@ -25,10 +25,13 @@ export class TelegramService implements INotificationService {
   private lastUpdateId = 0;
   private commandHandler?: (command: string, args: string) => void;
   private abortController: AbortController | null = null;
+  private sendDisabled = false;
+  private consecutiveFailures = 0;
 
   constructor(
     private readonly botToken: string,
     private readonly chatId: string,
+    private readonly log?: (msg: string) => void,
   ) {}
 
   isEnabled(): boolean {
@@ -39,7 +42,7 @@ export class TelegramService implements INotificationService {
     text: string,
     options?: { parseMode?: 'HTML' | 'Markdown' },
   ): Promise<void> {
-    if (!this.isEnabled()) { return; }
+    if (!this.isEnabled() || this.sendDisabled) { return; }
 
     const url = `${TELEGRAM_API}${this.botToken}/sendMessage`;
     const body = JSON.stringify({
@@ -57,11 +60,23 @@ export class TelegramService implements INotificationService {
       });
       const data = JSON.parse(resp.body) as { ok: boolean; description?: string };
       if (!data.ok) {
-        console.warn(`[telegram] API error: ${data.description ?? 'unknown'}`);
+        this.consecutiveFailures++;
+        this.log?.(`[telegram] API error: ${data.description ?? 'unknown'}`);
+        if (this.consecutiveFailures >= 2) {
+          this.sendDisabled = true;
+          this.log?.('[telegram] Too many failures — notifications disabled for this session. Check your botToken and chatId.');
+        }
+      } else {
+        this.consecutiveFailures = 0;
       }
     } catch (err: unknown) {
+      this.consecutiveFailures++;
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[telegram] sendMessage failed: ${msg}`);
+      this.log?.(`[telegram] sendMessage failed: ${msg}`);
+      if (this.consecutiveFailures >= 2) {
+        this.sendDisabled = true;
+        this.log?.('[telegram] Too many failures — notifications disabled for this session. Check your botToken and chatId.');
+      }
     }
   }
 

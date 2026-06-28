@@ -150,85 +150,152 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // ── Telegram notifications (disabled by default) ──
   let telegramService: TelegramService | null = null;
+  const telegramListeners: Array<{ event: string; handler: (...args: unknown[]) => void }> = [];
+
+  const cleanupTelegramListeners = () => {
+    for (const { event, handler } of telegramListeners) {
+      eventBus.off(event as keyof import('./core/events').EventMap, handler as never);
+    }
+    telegramListeners.length = 0;
+  };
+
+  const onTelegram = <K extends keyof import('./core/events').EventMap>(
+    event: K,
+    handler: (payload: import('./core/events').EventMap[K]) => void,
+  ) => {
+    eventBus.on(event, handler);
+    telegramListeners.push({ event, handler: handler as (...args: unknown[]) => void });
+  };
 
   const initTelegram = () => {
     if (config.telegramEnabled && config.telegramBotToken && config.telegramChatId) {
-      telegramService = new TelegramService(config.telegramBotToken, config.telegramChatId);
+      const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name ?? 'unknown';
+      const tag = `[${workspaceName}]`;
+
+      telegramService = new TelegramService(
+        config.telegramBotToken,
+        config.telegramChatId,
+        (msg) => logger.warn(msg),
+      );
+
+      const notifiedExps = new Set<string>();
 
       // Pipeline events → Telegram notifications
-      eventBus.on('pipeline:started', ({ sessionId }) => {
-        telegramService?.sendMessage(`🔬 Pipeline started for session <b>${sessionId}</b>`);
+      onTelegram('pipeline:started', () => {
+        notifiedExps.clear();
+        telegramService?.sendMessage(`${tag} 🔬 Pipeline started`);
       });
 
-      eventBus.on('pipeline:stepCompleted', ({ stepId }) => {
+      onTelegram('pipeline:stepCompleted', ({ stepId }) => {
         const stepDef = DEFAULT_RESEARCH_PIPELINE.steps.find(s => s.id === stepId);
-        telegramService?.sendMessage(`✅ <b>${stepDef?.name ?? stepId}</b> completed`);
+        telegramService?.sendMessage(`${tag} ✅ <b>${stepDef?.name ?? stepId}</b> completed`);
       });
 
-      eventBus.on('pipeline:stepProgress', ({ message }) => {
-        if (message?.includes('exp:') && (message.includes('✓') || message.includes('✗'))) {
-          telegramService?.sendMessage(`📊 ${message}`);
+      onTelegram('pipeline:stepProgress', ({ message }) => {
+        if (!message?.startsWith('exp:')) { return; }
+        const parts = message.substring(4).split('|');
+        if (parts.length < 4) { return; }
+        const [num, name, detail, status] = parts;
+        if (status !== 'completed' && status !== 'failed') { return; }
+
+        const key = `${num}|${status}`;
+        if (notifiedExps.has(key)) { return; }
+        notifiedExps.add(key);
+
+        if (status === 'failed') {
+          telegramService?.sendMessage(`${tag} 💥 #${num} <b>${name}</b> — ${detail}`);
+        } else {
+          telegramService?.sendMessage(`${tag} 📊 #${num} <b>${name}</b> — ${detail}`);
         }
       });
 
-      eventBus.on('pipeline:completed', () => {
+      onTelegram('pipeline:completed', () => {
         telegramService?.sendMessage(
-          '🏁 Pipeline completed!\n\nCommands: /status /continue /restart',
+          `${tag} 🏁 <b>Pipeline completed!</b>\n\n` +
+          '/status — check connection\n' +
+          '/continue — run more experiments\n' +
+          '/continue 10 — run 10 more\n' +
+          '/restart — start fresh\n' +
+          '/new — start a new session',
         );
       });
 
-      eventBus.on('pipeline:failed', ({ error }) => {
-        telegramService?.sendMessage(`❌ Pipeline failed: ${error}`);
+      onTelegram('pipeline:failed', ({ error }) => {
+        telegramService?.sendMessage(`${tag} ❌ Pipeline failed: ${error}`);
       });
 
-      eventBus.on('experiment:checkpointed', ({ experimentCount, bestMetric, bestValue, stopReason }) => {
+      onTelegram('experiment:checkpointed', ({ experimentCount, bestMetric, bestValue, stopReason }) => {
         telegramService?.sendMessage(
-          `📋 Experiments paused (${stopReason})\n` +
+          `${tag} 📋 <b>Experiments paused</b> (${stopReason})\n` +
           `Ran: ${experimentCount} | Best ${bestMetric}: ${bestValue.toFixed(4)}\n\n` +
-          `/continue — resume with more budget\n` +
-          `/continue 10 — add 10 experiments\n` +
-          `/restart — start fresh`,
+          '/continue — resume with more budget\n' +
+          '/continue 10 — add 10 experiments\n' +
+          '/restart — start fresh',
         );
       });
 
       // Telegram commands → VS Code actions
       telegramService.onCommand((cmd, args) => {
         switch (cmd) {
+          case 'start':
           case 'status':
-            telegramService?.sendMessage('📡 ResearchLoop is active. Use /continue or /restart.');
+            telegramService?.sendMessage(
+              `${tag} 📡 ResearchLoop is active.\n\n` +
+              '/continue — resume experiments\n' +
+              '/restart — start experiments fresh\n' +
+              '/new — start a new research session\n' +
+              '/pause — pause pipeline\n' +
+              '/resume — resume pipeline\n' +
+              '/stop — cancel pipeline',
+            );
             break;
           case 'pause':
             vscode.commands.executeCommand('researchloop.pausePipeline');
-            telegramService?.sendMessage('⏸ Pipeline paused');
+            telegramService?.sendMessage(`${tag} ⏸ Pipeline paused`);
             break;
           case 'resume':
             vscode.commands.executeCommand('researchloop.resumePipeline');
-            telegramService?.sendMessage('▶️ Pipeline resumed');
+            telegramService?.sendMessage(`${tag} ▶️ Pipeline resumed`);
             break;
           case 'stop':
             vscode.commands.executeCommand('researchloop.cancelPipeline');
-            telegramService?.sendMessage('⏹ Pipeline stopped');
+            telegramService?.sendMessage(`${tag} ⏹ Pipeline stopped`);
             break;
           case 'continue': {
             const n = parseInt(args, 10) || 5;
             vscode.commands.executeCommand('researchloop.continueExperiments', n);
-            telegramService?.sendMessage(`🔄 Continuing with ${n} more experiments...`);
+            telegramService?.sendMessage(`${tag} 🔄 Continuing with ${n} more experiments...`);
             break;
           }
           case 'restart':
             vscode.commands.executeCommand('researchloop.restartExperiments');
-            telegramService?.sendMessage('🔄 Restarting experiments from scratch...');
+            telegramService?.sendMessage(`${tag} 🔄 Restarting experiments from scratch...`);
+            break;
+          case 'new':
+            if (args.trim()) {
+              vscode.commands.executeCommand('researchloop.newSessionAuto', args.trim());
+              telegramService?.sendMessage(`${tag} 🆕 Starting new session: <b>${args.trim()}</b>`);
+            } else {
+              telegramService?.sendMessage(
+                `${tag} Usage: /new <research question>\n\n` +
+                'Example:\n/new Best methods for random forest hyperparameter tuning',
+              );
+            }
             break;
           default:
             telegramService?.sendMessage(
               `Unknown command: /${cmd}\n\n` +
-              'Available: /status /pause /resume /stop /continue /restart',
+              'Available: /status /pause /resume /stop /continue /restart /new',
             );
         }
       });
 
       telegramService.start();
       logger.info('Telegram notifications enabled');
+
+      telegramService.sendMessage(`${tag} 🔗 ResearchLoop connected.`);
+    } else if (config.telegramEnabled) {
+      logger.warn('Telegram enabled but botToken or chatId is missing — notifications disabled');
     }
   };
 
@@ -263,6 +330,7 @@ export async function activate(context: vscode.ExtensionContext) {
       if (e.affectsConfiguration('researchloop.notifications.telegram')) {
         telegramService?.stop();
         telegramService = null;
+        cleanupTelegramListeners();
         initTelegram();
       }
     }),

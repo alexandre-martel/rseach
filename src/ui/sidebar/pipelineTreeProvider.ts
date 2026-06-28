@@ -8,6 +8,7 @@ interface PipelineStepInfo {
   label: string;
   status: PipelineStepStatus;
   progress?: number;
+  currentDetail?: string;
 }
 
 interface ExperimentSubItem {
@@ -105,6 +106,14 @@ export class PipelineTreeProvider implements vscode.TreeDataProvider<PipelineSte
         } else {
           items.push({ number: num, name, detail, status, improved });
         }
+
+        // Show the currently running experiment on the parent step
+        if (step && status === 'running') {
+          step.currentDetail = `#${num} ${name}`;
+        } else if (step) {
+          const anyRunning = items.find(e => e.status === 'running');
+          step.currentDetail = anyRunning ? `#${anyRunning.number} ${anyRunning.name}` : undefined;
+        }
       }
     }
 
@@ -123,7 +132,7 @@ export class PipelineTreeProvider implements vscode.TreeDataProvider<PipelineSte
     if (!element) {
       return this.steps.map(s => {
         const hasChildren = (this.subItems.get(s.id)?.length ?? 0) > 0;
-        return new PipelineStepTreeItem(s.label, s.id, s.status, s.progress, hasChildren);
+        return new PipelineStepTreeItem(s.label, s.id, s.status, s.progress, hasChildren, s.currentDetail);
       });
     }
 
