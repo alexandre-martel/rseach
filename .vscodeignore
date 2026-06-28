@@ -9,8 +9,11 @@ node_modules/
 tsconfig.json
 tsconfig.webview.json
 esbuild.mjs
-*.map
 .claude/
 .researchloop/
+experiments/
+media/icon.svg
 **/*.ts
-!dist/**
+**/*.map
+!dist/**/*.js
+!dist/**/*.css

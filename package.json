@@ -30,16 +30,13 @@
     "research",
     "hyperparameter",
     "tuning",
-    "ml",
+    "machine-learning",
     "robotics",
     "arxiv",
-    "ai",
-    "agent"
+    "experiment",
+    "literature-review"
   ],
-  "activationEvents": [
-    "onView:researchloop.explorer",
-    "onCommand:researchloop.newSession"
-  ],
+  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
